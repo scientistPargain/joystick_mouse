@@ -6,11 +6,13 @@ class BaseMode:
         self.deadzone = deadzone
     def handle_input(self, dx, dy, sniper_active, current_time):
         raise NotImplementedError
+    def handle_click(self):
+        raise NotImplementedError
 
 class MouseMode(BaseMode):
-    """Tight deadzone (180) for precision and high sensitivity."""
+    """Tight deadzone (180) for precision. Click = Left Click."""
     def __init__(self, base_speed=0.015, max_speed_mult=4.0, ramp_time=0.8, sniper_mult=0.2):
-        super().__init__(deadzone=200) # Custom tight deadzone
+        super().__init__(deadzone=180)
         self.base_speed = base_speed
         self.max_speed_mult = max_speed_mult
         self.ramp_time = ramp_time
@@ -42,10 +44,13 @@ class MouseMode(BaseMode):
         if move_x != 0 or move_y != 0:
             pyautogui.moveRel(move_x, move_y)
 
+    def handle_click(self):
+        pyautogui.click()  # Standard Left Click
+
 class ScrollMode(BaseMode):
-    """Large deadzone (350) to prevent accidental scrolls when shifting thumbs."""
+    """Large deadzone (350). Click = Middle Click (Scroll wheel click)."""
     def __init__(self):
-        super().__init__(deadzone=400) # Generous deadzone
+        super().__init__(deadzone=350)
         self.last_action_time = 0
         self.cooldown = 0.35  
 
@@ -62,10 +67,13 @@ class ScrollMode(BaseMode):
                 pyautogui.hotkey('ctrl', 'shift', 'tab')   
                 self.last_action_time = current_time
 
+    def handle_click(self):
+        pyautogui.click(button='middle')  # Middle click to open links in new tabs
+
 class MediaMode(BaseMode):
-    """Very large deadzone (450) to make track-skipping deliberate."""
+    """Very large deadzone (450). Click = Play / Pause."""
     def __init__(self):
-        super().__init__(deadzone=600) # Strong threshold
+        super().__init__(deadzone=450)
         self.last_action_time = 0
         self.cooldown = 0.3 
 
@@ -85,10 +93,13 @@ class MediaMode(BaseMode):
                 pyautogui.press('prevtrack')
                 self.last_action_time = current_time
 
+    def handle_click(self):
+        pyautogui.press('playpause')  # Plays or pauses background media
+
 class ArrowKeysMode(BaseMode):
-    """Moderate deadzone (250) for crisp directional menu selection."""
+    """Moderate deadzone (250). Click = Enter Key."""
     def __init__(self):
-        super().__init__(deadzone=400) 
+        super().__init__(deadzone=250)
         self.last_action_time = 0
         self.cooldown = 0.15
 
@@ -107,3 +118,6 @@ class ArrowKeysMode(BaseMode):
             elif dx < -self.deadzone:
                 pyautogui.press('up')
                 self.last_action_time = current_time
+
+    def handle_click(self):
+        pyautogui.press('enter')  # Simulates pressing the Enter key

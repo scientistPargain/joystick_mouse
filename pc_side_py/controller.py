@@ -7,7 +7,6 @@ class JoystickController:
         self.tap_threshold = tap_threshold
         self.mode_hold_threshold = mode_hold_threshold
 
-        # Setup Mode Registry
         self.modes = [MouseMode(), ScrollMode(), MediaMode(), ArrowKeysMode()]
         self.mode_names = ["Mouse Mode", "Scroll Mode", "Media Mode", "Arrow Keys Mode"]
         self.current_mode_idx = 0
@@ -37,6 +36,7 @@ class JoystickController:
             dy = raw_y - self.CENTER_Y
 
             sniper_active = False
+            active_mode = self.modes[self.current_mode_idx]
 
             # --- DUAL-PURPOSE BUTTON SYSTEM ---
             if button == 0:  
@@ -57,14 +57,12 @@ class JoystickController:
             elif button == 1 and self.is_button_down:  
                 duration = current_time - self.button_pressed_time
                 if duration <= self.tap_threshold and not self.mode_shifted_this_press:
-                    import pyautogui
-                    pyautogui.click()
+                    # Routed to the mode's specific handler
+                    active_mode.handle_click()
                 
                 self.is_button_down = False
 
             # --- PASS CONTROL SIGNALS ---
-            active_mode = self.modes[self.current_mode_idx]
-            # Clean: Removed global deadzone param, using self-contained mode parameters
             active_mode.handle_input(dx, dy, sniper_active, current_time)
 
     def cycle_mode(self):
