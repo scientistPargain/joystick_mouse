@@ -21,16 +21,20 @@ CENTER_X = 2048
 CENTER_Y = 2048
 DEADZONE = 180 
 
-# --- ACCELERATION CONFIGURATION ---
-BASE_SPEED = 0.015       # Starting speed when you first push the stick
-MAX_SPEED_MULT = 4.0      # Maximum speed multiplier (e.g., up to 4x faster)
-RAMP_TIME = 0.8           # Time in seconds of holding the stick to reach MAX_SPEED_MULT
+# --- ACCELERATION & SNIPER CONFIGURATION ---
+BASE_SPEED = 0.015       
+MAX_SPEED_MULT = 4.0      
+RAMP_TIME = 0.8           
+SNIPER_SPEED_MULT = 0.2   # Reduces speed to 20% when button is held down
 
 # State tracking variables
 stick_held_start_time = 0
 is_stick_active = False
-last_click_time = 0
-DEBOUNCE_DELAY = 0.2
+
+# Button tracking variables
+button_pressed_time = 0
+is_button_down = False
+TAP_THRESHOLD = 0.25      # If released under 250ms, it's a normal click
 
 while True:
     try:
@@ -42,54 +46,66 @@ while True:
             if len(data) == 3:
                 raw_x = int(data[0])
                 raw_y = int(data[1])
-                button = int(data[2])
+                button = int(data[2])  # 0 = Pressed, 1 = Released
                 
-                # Calculate deviations from center
+                current_time = time.time()
+                
+                # --- SNIPER / CLICK BUTTON LOGIC ---
+                sniper_active = False
+                
+                if button == 0:  # Button is physically held DOWN
+                    if not is_button_down:
+                        button_pressed_time = current_time
+                        is_button_down = True
+                    
+                    # If held longer than the tap threshold, activate sniper mode
+                    if (current_time - button_pressed_time) > TAP_THRESHOLD:
+                        sniper_active = True
+                
+                elif button == 1 and is_button_down:  # Button was just RELEASED
+                    # If it was a short press, register a standard mouse click
+                    if (current_time - button_pressed_time) <= TAP_THRESHOLD:
+                        pyautogui.click()
+                    is_button_down = False
+                
+                # --- COORDINATE CALCULATION ---
+                # Fixed: Calculating dx and dy safely before evaluating activity status
                 dx = raw_x - CENTER_X
                 dy = raw_y - CENTER_Y
                 
                 # Check if the stick is physically being pushed past the deadzone
                 currently_active = abs(dx) > DEADZONE or abs(dy) > DEADZONE
-                current_time = time.time()
                 
                 # --- VELOCITY RAMPING LOGIC ---
-                if currently_active:
+                if currently_active and not sniper_active:
                     if not is_stick_active:
-                        # Stick just entered the active zone; start the timer
                         stick_held_start_time = current_time
                         is_stick_active = True
                     
-                    # Calculate how long the stick has been held down continuously
                     duration_held = current_time - stick_held_start_time
-                    
-                    # Calculate the speed factor linearly ramping up over time
-                    # min() caps it so it doesn't accelerate infinitely past MAX_SPEED_MULT
                     speed_factor = 1.0 + (MAX_SPEED_MULT - 1.0) * min(duration_held / RAMP_TIME, 1.0)
-                else:
-                    # Stick returned to center; reset the acceleration multiplier immediately
+                    current_modifier = BASE_SPEED * speed_factor
+                
+                elif sniper_active:
+                    # Sniper mode overrides acceleration entirely and dampens movement
                     is_stick_active = False
-                    speed_factor = 1.0
+                    current_modifier = BASE_SPEED * SNIPER_SPEED_MULT
                 
-                # Combine base modifier with dynamic ramping speed factor
-                current_modifier = BASE_SPEED * speed_factor
+                else:
+                    is_stick_active = False
+                    current_modifier = BASE_SPEED
                 
+                # --- CALCULATE MOVEMENT ---
                 move_x = 0
                 move_y = 0
                 
-                # Calculate final relative mouse movement values
                 if abs(dy) > DEADZONE:
                     move_x = dy * current_modifier
                 if abs(dx) > DEADZONE:
                     move_y = dx * current_modifier 
                 
-                # Move the cursor
                 if move_x != 0 or move_y != 0:
                     pyautogui.moveRel(move_x, move_y)
-                
-                # --- BUTTON HOOK ---
-                if button == 0 and (current_time - last_click_time > DEBOUNCE_DELAY):
-                    pyautogui.click()
-                    last_click_time = current_time
                     
     except KeyboardInterrupt:
         print("\nShutting down controller connection cleanly...")
