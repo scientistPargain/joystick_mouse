@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Joystick Multi-Tool Console</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.js"></script>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --panel-color: #1e293b;
+            --accent-color: #3b82f6;
+            --text-color: #f8fafc;
+            --muted-text: #94a3b8;
+            --border-color: #334155;
+            --active-color: #10b981;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 2px solid var(--border-color);
+            padding-bottom: 15px;
+            margin-bottom: 20px;
+        }
+
+        .status-badge {
+            background-color: var(--panel-color);
+            padding: 8px 16px;
+            border-radius: 20px;
+            border: 1px solid var(--border-color);
+            font-weight: bold;
+        }
+
+        #current-mode {
+            color: var(--active-color);
+        }
+
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: 20px;
+        }
+
+        @media (max-width: 900px) {
+            .dashboard-grid { grid-template-columns: 1fr; }
+        }
+
+        .panel {
+            background-color: var(--panel-color);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        h2 {
+            margin-top: 0;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 8px;
+            color: var(--accent-color);
+        }
+
+        .telemetry-row {
+            margin-bottom: 15px;
+        }
+
+        .telemetry-label {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+            font-size: 0.9rem;
+            color: var(--muted-text);
+        }
+
+        .progress-bar-container {
+            background-color: var(--bg-color);
+            height: 20px;
+            border-radius: 6px;
+            overflow: hidden;
+            border: 1px solid var(--border-color);
+        }
+
+        .progress-fill {
+            background-color: var(--accent-color);
+            height: 100%;
+            width: 50%;
+            transition: width 0.05s ease-out;
+        }
+
+        .btn {
+            background-color: var(--accent-color);
+            color: white;
+            border: none;
+            padding: 10px 18px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+            width: 100%;
+            transition: background 0.2s;
+        }
+
+        .btn:hover { background-color: #2563eb; }
+        .btn-mute { background-color: #ef4444; }
+        .btn-mute:hover { background-color: #dc2626; }
+        .btn-mute.muted { background-color: #64748b; }
+
+        .setting-group {
+            display: flex;
+            flex-direction: column;
+            margin-bottom: 15px;
+        }
+
+        .setting-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 6px;
+        }
+
+        .slider-row {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        input[type="range"] {
+            flex-grow: 1;
+            accent-color: var(--accent-color);
+        }
+
+        .value-display {
+            min-width: 50px;
+            text-align: right;
+            font-family: monospace;
+            background: var(--bg-color);
+            padding: 2px 6px;
+            border-radius: 4px;
+            border: 1px solid var(--border-color);
+        }
+
+        .toggle-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 0;
+            border-bottom: 1px solid #2d3748;
+        }
+
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 44px;
+            height: 24px;
+        }
+
+        .switch input { opacity: 0; width: 0; height: 0; }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background-color: #475569;
+            transition: .3s;
+            border-radius: 24px;
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 16px; width: 16px;
+            left: 4px; bottom: 4px;
+            background-color: white;
+            transition: .3s;
+            border-radius: 50%;
+        }
+
+        input:checked + .slider { background-color: var(--active-color); }
+        input:checked + .slider:before { transform: translateX(20px); }
+        
+        .mode-tabs-container {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        
+        .tab-btn {
+            background: var(--bg-color);
+            border: 1px solid var(--border-color);
+            color: var(--muted-text);
+            padding: 10px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        
+        .tab-btn.active {
+            background: var(--accent-color);
+            color: white;
+            border-color: var(--accent-color);
+        }
+        
+        .mode-panel { display: none; }
+        .mode-panel.active { display: block; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Joystick Configuration Workspace</h1>
+            <div class="status-badge">Active State: <span id="current-mode">Loading...</span></div>
+        </header>
+
+        <div class="dashboard-grid">
+            <div>
+                <div class="panel">
+                    <h2>Live Telemetry</h2>
+                    <div class="telemetry-row">
+                        <div class="telemetry-label"><span>Raw Position X-Axis</span><span id="val-raw-x">2048</span></div>
+                        <div class="progress-bar-container"><div id="bar-raw-x" class="progress-fill"></div></div>
+                    </div>
+                    <div class="telemetry-row">
+                        <div class="telemetry-label"><span>Raw Position Y-Axis</span><span id="val-raw-y">2048</span></div>
+                        <div class="progress-bar-container"><div id="bar-raw-y" class="progress-fill"></div></div>
+                    </div>
+                    <div class="telemetry-row">
+                        <div class="telemetry-label"><span>Computed Vector dX</span><span id="val-dx">0</span></div>
+                    </div>
+                    <div class="telemetry-row">
+                        <div class="telemetry-label"><span>Computed Vector dY</span><span id="val-dy">0</span></div>
+                    </div>
+                    <div class="telemetry-row">
+                        <div class="telemetry-label"><span>Z-Button State</span><span id="val-btn">NOT PRESSED</span></div>
+                    </div>
+                    <button class="btn" onclick="recenterJoystick()" style="margin-top: 10px;">Capture Rest Center Baseline</button>
+                </div>
+
+                <div class="panel">
+                    <h2>Audio Routing Matrix</h2>
+                    <div class="toggle-row">
+                        <span>Master Audio Enable</span>
+                        <label class="switch">
+                            <input type="checkbox" id="audio-master_mute" onchange="updateToggle('audio', 'master_mute', !this.checked)">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    <div class="toggle-row">
+                        <span>Profile Switch Confirmation Tones</span>
+                        <label class="switch">
+                            <input type="checkbox" id="audio-profile_shift" onchange="updateToggle('audio', 'profile_shift', this.checked)">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    <div class="toggle-row">
+                        <span>Media Action Pulses</span>
+                        <label class="switch">
+                            <input type="checkbox" id="audio-media_actions" onchange="updateToggle('audio', 'media_actions', this.checked)">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    <div class="toggle-row">
+                        <span>Arrow Direction Pulses</span>
+                        <label class="switch">
+                            <input type="checkbox" id="audio-arrow_actions" onchange="updateToggle('audio', 'arrow_actions', this.checked)">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    
+                    <h3 style="margin-top: 20px; font-size: 1rem; color: var(--muted-text);">Buzzer Diagnostics</h3>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                        <button class="btn" onclick="triggerTestBeep(1)">Single Beep</button>
+                        <button class="btn" onclick="triggerTestBeep(3)">Triple Beep</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2>Profile Tuning Framework</h2>
+                <div class="mode-tabs-container">
+                    <button id="tab-mouse" class="tab-btn active" onclick="switchTab('mouse')">Mouse</button>
+                    <button id="tab-scroll" class="tab-btn" onclick="switchTab('scroll')">Scroll</button>
+                    <button id="tab-media" class="tab-btn" onclick="switchTab('media')">Media</button>
+                    <button id="tab-arrow" class="tab-btn" onclick="switchTab('arrow')">Arrow Keys</button>
+                </div>
+
+                <div id="panel-mouse" class="mode-panel active">
+                    <div class="setting-group">
+                        <div class="setting-header"><span>Precision Deadzone Baseline</span></div>
+                        <div class="slider-row">
+                            <input type="range" id="mouse-deadzone" min="10" max="1000" step="5" oninput="updateSliderValue('mouse', 'deadzone', this.value)">
+                            <span id="mouse-deadzone-txt" class="value-display">180</span>
+                        </div>
+                    </div>
+                    <div class="setting-group">
+                        <div class="setting-header"><span>Base Tracking Speed (Scalar)</span></div>
+                        <div class="slider-row">
+                            <input type="range" id="mouse-base_speed" min="0.001" max="0.1" step="0.001" oninput="updateSliderValue('mouse', 'base_speed', this.value)">
+                            <span id="mouse-base_speed-txt" class="value-display">0.015</span>
+                        </div>
+                    </div>
+                    <div class="setting-group">
+                        <div class="setting-header"><span>Max Turbo Speed Velocity Multiplier</span></div>
+                        <div class="slider-row">
+                            <input type="range" id="mouse-max_speed_mult" min="1.0" max="10.0" step="0.1" oninput="updateSliderValue('mouse', 'max_speed_mult', this.value)">
+                            <span id="mouse-max_speed_mult-txt" class="value-display">4.0</span>
+                        </div>
+                    </div>
+                    <div class="setting-group">
+                        <div class="setting-header"><span>Acceleration Ramp Window (Seconds)</span></div>
+                        <div class="slider-row">
+                            <input type="range" id="mouse-ramp_time" min="0.1" max="3.0" step="0.1" oninput="updateSliderValue('mouse', 'ramp_time', this.value)">
+                            <span id="mouse-ramp_time-txt" class="value-display">0.8</span>
+                        </div>
+                    </div>
+                    <div class="setting-group">
+                        <div class="setting-header"><span>Sniper Mode Dampener Strength Factor</span></div>
+                        <div class="slider-row">
+                            <input type="range" id="mouse-sniper_mult" min="0.05" max="0.9" step="0.05" oninput="updateSliderValue('mouse', 'sniper_mult', this.value)">
+                            <span id="mouse-sniper_mult-txt" class="value-display">0.2</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="panel-scroll" class="mode-panel">
+                    <div class="setting-group">
+                        <div class="setting-header"><span>Scroll Deadzone Threshold</span></div>
+                        <div class="slider-row">
+                            <input type="range" id="scroll-deadzone" min="50" max="2000" step="10" oninput="updateSliderValue('scroll', 'deadzone', this.value)">
+                            <span id="scroll-deadzone-txt" class="value-display">350</span>
+                        </div>
+                    </div>
+                    <div class="setting-group">
+                        <div class="setting-header"><span>Ticks Per Active Sweep Step</span></div>
+                        <div class="slider-row">
+                            <input type="range" id="scroll-scroll_amount" min="1" max="20" step="1" oninput="updateSliderValue('scroll', 'scroll_amount', this.value)">
+                            <span id="scroll-scroll_amount-txt" class="value-display">4</span>
+                        </div>
+                    </div>
+                    <div class="setting-group">
+                        <div class="setting-header"><span>Tab Switching Cooldown Window (Seconds)</span></div>
+                        <div class="slider-row">
+                            <input type="range" id="scroll-cooldown" min="0.05" max="1.5" step="0.05" oninput="updateSliderValue('scroll', 'cooldown', this.value)">
+                            <span id="scroll-cooldown-txt" class="value-display">0.35</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="panel-media" class="mode-panel">
+                    <div class="setting-group">
+                        <div class="setting-header"><span>Media Trigger Deadzone</span></div>
+                        <div class="slider-row">
+                            <input type="range" id="media-deadzone" min="100" max="2000" step="20" oninput="updateSliderValue('media', 'deadzone', this.value)">
+                            <span id="media-deadzone-txt" class="value-display">450</span>
+                        </div>
+                    </div>
+                    <div class="setting-group">
+                        <div class="setting-header"><span>Action Cycle Cooldown Timeout (Seconds)</span></div>
+                        <div class="slider-row">
+                            <input type="range" id="media-cooldown" min="0.05" max="2.0" step="0.05" oninput="updateSliderValue('media', 'cooldown', this.value)">
+                            <span id="media-cooldown-txt" class="value-display">0.3</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="panel-arrow" class="mode-panel">
+                    <div class="setting-group">
+                        <div class="setting-header"><span>Arrow Input Deadzone Breakout</span></div>
+                        <div class="slider-row">
+                            <input type="range" id="arrow-deadzone" min="50" max="2000" step="10" oninput="updateSliderValue('arrow', 'deadzone', this.value)">
+                            <span id="arrow-deadzone-txt" class="value-display">250</span>
+                        </div>
+                    </div>
+                    <div class="setting-group">
+                        <div class="setting-header"><span>Key Stroke Repeat Frequency Rate (Seconds)</span></div>
+                        <div class="slider-row">
+                            <input type="range" id="arrow-cooldown" min="0.02" max="1.0" step="0.02" oninput="updateSliderValue('arrow', 'cooldown', this.value)">
+                            <span id="arrow-cooldown-txt" class="value-display">0.15</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Force fully explicit local context loop routing configurations
+        const socket = io("http://127.0.0.1:5000");
+
+        // Dynamic incoming telemetry mapping pipeline
+        socket.on('telemetry_data', function(data) {
+            document.getElementById('current-mode').innerText = data.current_mode;
+            document.getElementById('val-raw-x').innerText = data.raw_x;
+            document.getElementById('val-raw-y').innerText = data.raw_y;
+            document.getElementById('val-dx').innerText = data.dx;
+            document.getElementById('val-dy').innerText = data.dy;
+            document.getElementById('val-btn').innerText = (data.button === 0) ? "PRESSED / ACTIVE" : "NOT PRESSED";
+
+            // Percent scale translation tracking for real time UI gauge fills
+            const pctX = (data.raw_x / 4095) * 100;
+            const pctY = (data.raw_y / 4095) * 100;
+            document.getElementById('bar-raw-x').style.width = pctX + '%';
+            document.getElementById('bar-raw-y').style.width = pctY + '%';
+        });
+
+        // Database settings structural configuration loader synchronization
+        socket.on('sync_config', function(config) {
+            for (let section in config) {
+                for (let key in config[section]) {
+                    const el = document.getElementById(`${section}-${key}`);
+                    if (!el) continue;
+
+                    if (el.type === 'checkbox') {
+                        // Special inverted validation case specifically for master_mute tracking matrix
+                        el.checked = (key === 'master_mute') ? !config[section][key] : config[section][key];
+                    } else {
+                        el.value = config[section][key];
+                        const txtEl = document.getElementById(`${section}-${key}-txt`);
+                        if (txtEl) txtEl.innerText = config[section][key];
+                    }
+                }
+            }
+        });
+
+        function updateSliderValue(section, key, val) {
+            document.getElementById(`${section}-${key}-txt`).innerText = val;
+            socket.emit('update_setting', { section: section, key: key, value: parseFloat(val) });
+        }
+
+        function updateToggle(section, key, val) {
+            socket.emit('update_setting', { section: section, key: key, value: val });
+        }
+
+        function recenterJoystick() {
+            socket.emit('trigger_recenter');
+        }
+
+        function triggerTestBeep(count) {
+            socket.emit('trigger_test_beep', { count: count });
+        }
+
+        function switchTab(mode) {
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+            document.querySelectorAll('.mode-panel').forEach(panel => panel.classList.remove('active'));
+            
+            document.getElementById(`tab-${mode}`).classList.add('active');
+            document.getElementById(`panel-${mode}`).classList.add('active');
+        }
+    </script>
+</body>
+</html>

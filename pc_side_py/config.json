@@ -1,0 +1,28 @@
+{
+  "audio": {
+    "master_mute": false,
+    "profile_shift": true,
+    "media_actions": true,
+    "arrow_actions": true
+  },
+  "mouse": {
+    "deadzone": 600,
+    "base_speed": 0.015,
+    "max_speed_mult": 4.0,
+    "ramp_time": 2.9,
+    "sniper_mult": 0.2
+  },
+  "scroll": {
+    "deadzone": 1000,
+    "scroll_amount": 4,
+    "cooldown": 0.35
+  },
+  "media": {
+    "deadzone": 2000,
+    "cooldown": 0.4
+  },
+  "arrow": {
+    "deadzone": 2000,
+    "cooldown": 0.34
+  }
+}
