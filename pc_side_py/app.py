@@ -5,7 +5,7 @@ monkey.patch_all()
 import os
 import json
 import serial
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template
 from flask_socketio import SocketIO
 import gevent
 from controller import JoystickController
@@ -18,7 +18,6 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = 'joystick_secret_xyz!'
 socketio = SocketIO(app, async_mode='gevent', cors_allowed_origins="*")
 
-# Shared global controller references
 esp32_serial = None
 joystick_controller = None
 
@@ -29,7 +28,6 @@ def load_config_data():
     return {}
 
 def background_joystick_loop():
-    """Cooperative gevent greenlet execution loop to keep telemetry streaming fluidly."""
     global joystick_controller
     print(f"[ENGINE] Web server successfully bound to joystick telemetry on port: {SERIAL_PORT}")
     
@@ -37,8 +35,6 @@ def background_joystick_loop():
         if joystick_controller:
             try:
                 joystick_controller.update()
-                
-                # Emit live real-time position matrix packages straight to the browser UI
                 telemetry = joystick_controller.latest_telemetry
                 socketio.emit('telemetry_data', {
                     'raw_x': telemetry['raw_x'],
@@ -48,9 +44,8 @@ def background_joystick_loop():
                     'dy': telemetry['dy'],
                     'current_mode': joystick_controller.mode_names[joystick_controller.current_mode_idx]
                 })
-            except Exception as e:
+            except Exception:
                 pass
-        # Voluntarily yield execution time to allow the web framework server to process socket routes
         gevent.sleep(0.001)
 
 @app.route('/')
@@ -59,13 +54,18 @@ def index():
 
 @socketio.on('connect')
 def handle_connect():
-    print("[DASHBOARD] Web Client Connected. Synchronizing configuration matrix parameters...")
-    # Send the current config parameters over to the page so inputs align with saved JSON numbers
+    global joystick_controller
+    print("[DASHBOARD] Web Client Connected/Refreshed. Reverting memory to disk baseline...")
+    
+    if joystick_controller:
+        # Re-read config.json from disk to wipe out any unsaved trial variations
+        joystick_controller.load_config() 
+        
     socketio.emit('sync_config', load_config_data())
 
 @socketio.on('update_setting')
 def handle_setting_update(data):
-    """Listens to real-time UI value shifts, commits to matrix runtime, and updates JSON database."""
+    """Updates runtime memory parameters instantly for trial testing, without writing to disk."""
     global joystick_controller
     if not joystick_controller:
         return
@@ -75,7 +75,6 @@ def handle_setting_update(data):
     value = data.get('value')
     
     try:
-        # Cast values properly depending on data-type profile signature
         if isinstance(joystick_controller.config[section][key], bool):
             value = bool(value)
         elif isinstance(joystick_controller.config[section][key], int):
@@ -83,32 +82,40 @@ def handle_setting_update(data):
         elif isinstance(joystick_controller.config[section][key], float):
             value = float(value)
             
+        # Modify active memory framework only
         joystick_controller.config[section][key] = value
-        joystick_controller.save_config()
         
-        # Broadcast configuration updates out to any other open browser tabs
+        # Broadcast configuration updates out to other open browser contexts
         socketio.emit('sync_config', joystick_controller.config)
     except Exception as e:
-        print(f"[ERROR] Failed applying setting variation update: {e}")
+        print(f"[ERROR] Failed applying runtime setting update: {e}")
+
+@socketio.on('save_configuration')
+def handle_save_configuration():
+    """Explicitly commits the current memory state structure directly to config.json."""
+    global joystick_controller
+    if joystick_controller:
+        try:
+            joystick_controller.save_config()
+            print("[DATABASE] Successfully committed memory matrix parameters directly to config.json")
+            socketio.emit('save_confirmed', {'status': 'success'})
+        except Exception as e:
+            print(f"[CRITICAL] Disk write failure: {e}")
 
 @socketio.on('trigger_recenter')
 def handle_recenter():
-    """Manual recalibration offset request hook."""
     global joystick_controller
     if joystick_controller:
         joystick_controller.update_offsets()
 
 @socketio.on('trigger_test_beep')
 def handle_test_beep(data):
-    """Direct manual buzzer injection circuit execution tester."""
     global joystick_controller
     if joystick_controller:
         count = int(data.get('count', 1))
-        # Bypass master mute for hardware testing purposes specifically
         payload = f"BEEP:{count}\n"
         try:
             joystick_controller.esp32.write(payload.encode('utf-8'))
-            print(f"[TEST] Dispatched diagnostics pulse array burst: {count} beeps")
         except Exception:
             pass
 
@@ -116,14 +123,9 @@ if __name__ == '__main__':
     try:
         esp32_serial = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.001)
     except Exception as e:
-        print(f"[CRITICAL] Serial interface initialization error: {e}. Check device connection hooks!")
+        print(f"[CRITICAL] Serial interface initialization error: {e}")
         os._exit(1)
 
-    # Handover runtime configuration blocks
     joystick_controller = JoystickController(esp32_serial)
-    
-    # Spawn the background telemetry parser loop using native gevent execution greenlets
     gevent.spawn(background_joystick_loop)
-    
-    # Fire up the lightweight WSGI web runtime application server environment
     socketio.run(app, host='127.0.0.1', port=5000, debug=False)
