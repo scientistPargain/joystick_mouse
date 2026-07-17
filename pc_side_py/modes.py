@@ -68,7 +68,8 @@ class ScrollMode(BaseMode):
                 self.last_action_time = current_time
 
     def handle_click(self):
-        pyautogui.click(button='middle')  # Middle click to open links in new tabs
+        # pyautogui.click(button='middle')  # Middle click to open links in new tabs
+        return
 
 class MediaMode(BaseMode):
     """Very large deadzone (450). Click = Play / Pause."""
