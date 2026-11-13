@@ -2,17 +2,33 @@
 from gevent import monkey
 monkey.patch_all()
 
+import ctypes
 import os
 import json
+import time
 import serial
 from flask import Flask, render_template
 from flask_socketio import SocketIO
 import gevent
 from controller import JoystickController
 
+# Windows' default timer granularity is ~15.6 ms, which turns gevent.sleep(0.001)
+# into a ~15 ms sleep and drops the sensor loop from ~650 Hz to ~65 Hz: half of
+# the frames the device sends are then missed and the pointer moves in visible
+# steps. Ask for a 1 ms timer period.
+try:
+    ctypes.windll.winmm.timeBeginPeriod(1)
+except Exception:
+    pass
+
 # Serial Port Settings
-SERIAL_PORT = 'COM5'
+SERIAL_PORT = 'COM10'
 BAUD_RATE = 115200
+
+# The sensor loop runs ~650x/s, but the dashboard only needs 50 Hz to look live.
+# Emitting every tick floods the browser and can block the gevent hub, which
+# stalls the sensor loop and leaves a backlog of frames to be replayed.
+TELEMETRY_INTERVAL = 0.02
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'joystick_secret_xyz!'
@@ -29,21 +45,27 @@ def load_config_data():
 
 def background_joystick_loop():
     global joystick_controller
-    print(f"[ENGINE] Web server successfully bound to joystick telemetry on port: {SERIAL_PORT}")
-    
+    last_emit = 0.0
     while True:
         if joystick_controller:
             try:
                 joystick_controller.update()
-                telemetry = joystick_controller.latest_telemetry
-                socketio.emit('telemetry_data', {
-                    'raw_x': telemetry['raw_x'],
-                    'raw_y': telemetry['raw_y'],
-                    'button': telemetry['button'],
-                    'dx': telemetry['dx'],
-                    'dy': telemetry['dy'],
-                    'current_mode': joystick_controller.mode_names[joystick_controller.current_mode_idx]
-                })
+                now = time.time()
+                if now - last_emit >= TELEMETRY_INTERVAL:
+                    last_emit = now
+                    telemetry = joystick_controller.latest_telemetry
+                    socketio.emit('telemetry_data', {
+                        # The stick module is mounted rotated: the pot's Y axis drives
+                        # the pointer's horizontal axis (see the move_x/move_y mapping in
+                        # modes.py). Report the axes the pointer actually uses so the
+                        # dashboard matches what the cursor does.
+                        'raw_x': telemetry['raw_y'],
+                        'raw_y': telemetry['raw_x'],
+                        'button': telemetry['button'],
+                        'dx': telemetry['dy'],
+                        'dy': telemetry['dx'],
+                        'current_mode': joystick_controller.mode_names[joystick_controller.current_mode_idx]
+                    })
             except Exception:
                 pass
         gevent.sleep(0.001)

@@ -6,7 +6,7 @@
     "arrow_actions": true
   },
   "mouse": {
-    "deadzone": 600,
+    "deadzone": 155,
     "base_speed": 0.015,
     "max_speed_mult": 4.0,
     "ramp_time": 2.9,

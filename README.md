@@ -74,6 +74,15 @@ Move a slider → the change applies immediately (in memory only). Hit
 **Save Profile Settings** to write it to `pc_side_py/config.json`. Use
 **Capture Rest Center Baseline** if the pointer drifts at rest.
 
+> Deadzones are in raw ADC units (0–4095), not pixels. Values above ~1000 mean
+> the stick must be pushed more than half its travel — start around 100–300.
+
+### Running the test
+
+```powershell
+.\pc_side_py\venv\Scripts\python.exe test\test_rx_framing.py
+```
+
 ## Using the joystick
 
 | Gesture | Action |

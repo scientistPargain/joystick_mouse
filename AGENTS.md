@@ -23,9 +23,10 @@ pio run -e esp32dev -t upload  # flash
 pio run -e esp32dev -t monitor # serial monitor, 115200
 cd pc_side_py; .\venv\Scripts\python.exe app.py   # dashboard at http://127.0.0.1:5000
 cd pc_side_py; .\venv\Scripts\python.exe pc_controller_v2.py  # CLI, no web UI
+.\pc_side_py\venv\Scripts\python.exe test\test_rx_framing.py  # serial framing regression test
 ```
 
-No test suite exists (`test/` is the stock PlatformIO placeholder). Verify changes by running the PC side and/or the dashboard; `pio run` is the only automated check.
+`test/test_rx_framing.py` is the only test in the repo (plain asserts, no pytest). It pins the serial framing rules and the "a backlog must not replay as pointer movement" rule — run it after touching `controller.py`'s reader. Firmware has no test suite (the root `test/` folder also holds the PlatformIO placeholder for firmware unit tests).
 
 ## Serial protocol (115200, both directions)
 
@@ -40,7 +41,10 @@ Firmware and Python must agree on this format — change both sides together.
 
 - **Run from inside `pc_side_py/`.** `config.json` is opened by relative path in `controller.py`; launching from the repo root silently loads fallback defaults and writes the config to the wrong place.
 - **`from gevent import monkey; monkey.patch_all()` must stay the first import in `app.py`** — before `flask`, `flask_socketio`, `pyserial`. Moving it down breaks the async mode.
-- **`SERIAL_PORT = 'COM5'` is hardcoded in three places** (`app.py`, `pc_controller.py`, `pc_controller_v2.py`). The Windows COM number changes with USB re-enumeration; update all three.
+- **`SERIAL_PORT` is hardcoded in three places** (`app.py`, `pc_controller.py`, `pc_controller_v2.py`). The Windows COM number changes with USB re-enumeration; update all three.
+- **Never call `reset_input_buffer()` on the serial port.** A purge discards the head of the *next* frame; the tail then parses as a complete frame with a corrupted first field. The reader must accumulate bytes and split on newlines (`controller.py:update()`).
+- **Only the newest frame may move the pointer.** If the engine is ever blocked, a backlog of frames piles up in the driver buffer; replaying all of them flings the cursor across the screen for seconds.
+- **Windows timer granularity is ~15.6 ms**, which turns `gevent.sleep(0.001)` into a 15 ms sleep and drops the sensor loop from ~650 Hz to ~65 Hz. `app.py` calls `timeBeginPeriod(1)` for this reason — do not remove it.
 - **Config is in-memory until explicitly saved.** The dashboard's `update_setting` event mutates only `controller.config`; `save_configuration` is the only path that writes `config.json`. A browser reconnect re-reads `config.json` from disk and **discards unsaved tuning changes**.
 - **`pyautogui` drives the real mouse/keyboard.** There is no headless mode; don't run the engine unattended. `pyautogui.FAILSAFE` is only enabled in the legacy `pc_controller.py`, not in `controller.py`.
 - Socket.io event names are shared between `app.py` (server) and `templates/index.html` (client): `telemetry_data`, `sync_config`, `save_confirmed`, `update_setting`, `save_configuration`, `trigger_recenter`, `trigger_test_beep`. Rename in one place only and the dashboard breaks silently.

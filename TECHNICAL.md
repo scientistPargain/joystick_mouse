@@ -126,10 +126,14 @@ but any new command type must follow the same newline-terminated convention.
 
 ### 3.4 Loop timing
 
-`delay(8)` at the end of the loop → roughly **125 sensor frames per second**.
-The PC engine reads whatever is buffered and discards the rest
-(`reset_input_buffer()`), so the effective telemetry rate is bounded by the
-PC-side loop, not by the firmware.
+`delay(8)` at the end of the loop → roughly **125 sensor frames per second**
+(~110 fps measured over the wire). The PC engine reads every arrived byte and
+keeps the incomplete tail until its newline arrives (see §5.1), so no frame is
+lost.
+
+> Opening the serial port toggles DTR/RTS, which **reboots the ESP32** — the
+> boot log (`ets Jul 29 2019 …`) is printed into the same stream and is ignored
+> by the parser. This is normal, not a fault.
 
 ---
 
@@ -179,19 +183,36 @@ modes.py
 
 ```python
 if self.esp32.in_waiting > 0:
-    line = self.esp32.readline().decode('utf-8', errors='ignore').strip()
-    self.esp32.reset_input_buffer()
-    data = line.split(',')
-    if len(data) != 3: return
+    self._rxbuf += self.esp32.read(self.esp32.in_waiting)
+    if len(self._rxbuf) > 4096:
+        self._rxbuf = b''          # frame that never terminates -> resync
+    *frames, self._rxbuf = self._rxbuf.split(b'\n')
+    for frame in frames[:-1]:
+        self._handle_frame(frame.decode('utf-8', errors='ignore').strip(), move=False)
+    if frames:
+        self._handle_frame(frames[-1].decode('utf-8', errors='ignore').strip(), move=True)
 ```
 
-- `timeout=0.001` on the serial object, so `readline()` never blocks long.
-- `reset_input_buffer()` discards any partially-received or queued frames —
-  the engine always works on the freshest sample and never builds a backlog.
-- Malformed frames (wrong field count) are dropped silently; the whole body is
-  wrapped in `try/except: pass`, so a bad frame can never kill the loop.
+- Every arrived byte is read and split on newlines; the incomplete tail stays
+  in `_rxbuf` until its newline arrives, so a frame that arrives in pieces is
+  **reassembled** instead of being mangled.
+- **Never call `reset_input_buffer()` here.** A purge discards whatever has
+  already arrived; the rest of that frame arrives afterwards, and the tail then
+  parses as a complete frame with a corrupted first field (observed as
+  `raw_x` collapsing to `0` or `94`, which produced pointer jitter no deadzone
+  could filter out).
+- **Only the newest frame moves the pointer** (`move=True`). If the engine is
+  blocked for any reason, the driver buffer accumulates a backlog; replaying
+  every frame of that backlog flings the cursor across the screen for seconds.
+  The older frames are still parsed (so button taps are not lost) but only
+  update state.
+- `timeout=0.001` on the serial object, so reads never block long.
+- Malformed frames (wrong field count, non-numeric fields, ESP32 boot chatter)
+  are dropped silently; the whole body is wrapped in `try/except: pass`, so a
+  bad frame can never kill the loop.
 - `latest_telemetry` is refreshed with every accepted frame and is what the
   dashboard displays.
+- Regression test: `test/test_rx_framing.py`.
 
 ### 5.2 Button state machine
 
@@ -255,7 +276,9 @@ move_y = dx * current_modifier
 **ScrollMode**
 
 - `|dx| > deadzone` → `pyautogui.scroll(±scroll_amount)`, sign flipped
-  (`dx < 0` → positive scroll).
+  (`dx < 0` → positive scroll). Rate limited to `SCROLL_INTERVAL` (0.04 s,
+  25 events/s) — the device streams ~110 frames/s and an unthrottled scroll
+  event per frame scrolls the page away instantly.
 - `dy > deadzone` → `Ctrl+Tab`; `dy < -deadzone` → `Ctrl+Shift+Tab`, gated by
   `cooldown` seconds.
 - Click → **middle click**.
@@ -283,11 +306,19 @@ move_y = dx * current_modifier
   top of `app.py` replaces the standard library's threading/socket behaviour
   with gevent's cooperative greenlets. It must be the *first* import.
 - The sensor loop is a separate greenlet: `gevent.spawn(background_joystick_loop)`.
-- Inside that loop: `joystick_controller.update()` then a `socketio.emit()`,
-  then `gevent.sleep(0.001)`. Because the emit happens on every tick, the
-  dashboard receives a telemetry event roughly **every millisecond**, even when
-  the underlying serial frame has not changed. It is cheap on localhost but is
-  the main CPU cost of the app.
+- Inside that loop: `joystick_controller.update()` then (throttled)
+  `socketio.emit()`, then `gevent.sleep(0.001)`.
+- **Windows' default timer granularity is ~15.6 ms**, so `gevent.sleep(0.001)`
+  actually sleeps ~15 ms and the loop drops from ~650 Hz to ~65 Hz — the
+  pointer then only reacts every other frame. `app.py` calls
+  `ctypes.windll.winmm.timeBeginPeriod(1)` to get a 1 ms timer period. Without
+  it the device feels sluggish no matter how the config is tuned.
+- The telemetry emit is throttled to `TELEMETRY_INTERVAL` (0.02 s → 50 Hz).
+  Emitting on every loop tick floods the browser with hundreds of messages per
+  second and makes the whole machine feel sluggish; 50 Hz is already faster
+  than the eye can read the dashboard.
+- The pointer path is **not** affected by that throttle: `update()` still runs
+  on every tick and applies the newest frame of every device frame (~110 fps).
 - The dashboard runs on `127.0.0.1:5000` only (loopback). `cors_allowed_origins="*"`
   is set, but the socket is bound to localhost, so it is not reachable from
   other machines.
@@ -311,29 +342,40 @@ directory.
     "arrow_actions":  true    // beep on arrow actions
   },
   "mouse": {
-    "deadzone":       600,    // raw ADC units ignored at rest
-    "base_speed":     0.015,  // pixels per raw unit at rest
-    "max_speed_mult": 4.0,    // speed multiplier at full ramp
-    "ramp_time":      2.9,    // seconds to reach max_speed_mult
-    "sniper_mult":    0.2     // precision-mode multiplier
+    "deadzone":       150,    // raw ADC units ignored at rest
+    "base_speed":     0.015,  // pixels per raw unit PER FRAME (see note)
+    "max_speed_mult": 3.0,    // speed multiplier at full ramp
+    "ramp_time":      0.6,    // seconds to reach max_speed_mult
+    "sniper_mult":    0.15    // precision-mode multiplier
   },
-  "scroll": { "deadzone": 1000, "scroll_amount": 4, "cooldown": 0.35 },
-  "media":  { "deadzone": 2000, "cooldown": 0.4 },
-  "arrow":  { "deadzone": 2000, "cooldown": 0.34 }
+  "scroll": { "deadzone": 400, "scroll_amount": 4, "cooldown": 0.35 },
+  "media":  { "deadzone": 800, "cooldown": 0.4 },
+  "arrow":  { "deadzone": 600, "cooldown": 0.34 }
 }
 ```
 
-Deadzones are in **raw ADC units (0–4095)**, not pixels. A deadzone of 2000
-means you must push the stick more than half its travel before anything
-happens.
+Deadzones are in **raw ADC units (0–4095)**, not pixels. With the stick resting
+near raw 2000 and `CENTER` at 2048, a deadzone of 150 means the cursor starts
+moving after roughly 200 units of push (~5 % of travel). A deadzone of 2000
+means the stick has to be shoved almost to its end before anything happens.
 
-### 7.2 Two sets of defaults
+**`base_speed` is per frame, not per second.** The pointer moves
+`dx × base_speed` pixels *for every frame the device sends* (~110/s measured),
+so the on-screen speed is `dx × base_speed × 110` px/s and it scales with the
+frame rate. Reference values with the defaults above:
+
+| deflection (raw units) | px/s at ramp start | px/s after the 0.6 s ramp |
+|---|---|---|
+| 150 | ~250 | ~670 |
+| 450 | ~750 | ~2000 |
+| 950 | ~1570 | ~4200 |
+| 2000 | ~3300 | ~8800 |
+
+### 7.2 Fallback defaults
 
 `controller.py:load_config()` has a hard-coded fallback dict used when
-`config.json` is missing. Those values are *not* the same as the file's
-(currently: mouse deadzone 180 vs 600, ramp 0.8 vs 2.9, media/arrow deadzones
-450/250 vs 2000/2000). If the file goes missing, the feel changes noticeably.
-Keep the two in sync when you change either.
+`config.json` is missing. It is kept **identical** to the file's values — if the
+two ever drift, a deleted config file silently changes the feel of the device.
 
 ### 7.3 Write semantics
 
@@ -386,6 +428,16 @@ sections via `switchTab(mode)`. The left column holds the live telemetry panel
 (with the "Capture Rest Center Baseline" button) and the audio matrix with the
 buzzer diagnostics buttons (single / triple beep).
 
+### 8.4 Axis convention on the dashboard
+
+The stick module is mounted rotated: the **pot's Y axis drives the pointer's
+horizontal axis** (`modes.py` maps `move_x = dy`, `move_y = dx`, and the
+scroll/media/arrow profiles follow the same convention). The dashboard therefore
+reports the *pointer's* axes, not the raw pots: `app.py` swaps `raw_x`/`raw_y`
+and `dx`/`dy` when it emits `telemetry_data`, and the panel labels the rows
+"Position X (horizontal)" / "Position Y (vertical)". The controller's internals
+(`CENTER_X/CENTER_Y`, the recenter button) stay in raw pot space.
+
 ---
 
 ## 9. Extension guide
@@ -411,10 +463,37 @@ buzzer diagnostics buttons (single / triple beep).
 
 ---
 
-## 10. Troubleshooting
+## 10. Known design constraints
+
+Deliberate or hardware-specific behaviours that look like bugs but are not
+"fixed" by accident:
+
+- **The pointer speed is frame-rate dependent.** `base_speed` is applied per
+  frame, so the px/s scales with how many frames the device sends (~110/s).
+  Before the framing fix in §5.1 roughly half the frames were being dropped by
+  the port purge, which silently halved the pointer speed; the fix restored it
+  to the real frame rate. Any future change to the frame rate changes the feel.
+- **The axes are swapped**: `move_x = dy`, `move_y = dx` (`modes.py`). This
+  compensates for the physical orientation of the joystick module. If the
+  module is mounted differently, swap the two.
+- **`CENTER_X/CENTER_Y` default to 2048/2048** (the ADC midpoint), but this
+  joystick actually rests near raw 2000/1968 — a constant offset of
+  (-48, -80). Harmless while the deadzone is above ~100, but press **Capture
+  Rest Center Baseline** once to make the travel symmetric.
+- **The firmware's command read is blocking.** `Serial.readStringUntil('\n')`
+  waits for a newline with no timeout, so a command that arrives without one
+  freezes the firmware (and with it the telemetry). The PC always appends
+  `\n`; a future command type must do the same.
+- **The dashboard's slider broadcast** re-syncs every open browser on each
+  `update_setting`, i.e. on every `oninput` tick while a slider is dragged.
+
+## 11. Troubleshooting
 
 | Symptom | Likely cause / fix |
 |---|---|
+| Pointer teleports/jitters at rest, deadzone ignored | A frame was corrupted in the reader (historically `reset_input_buffer()` cutting the next frame). Check the raw values in the dashboard telemetry: they must stay inside a narrow band (~1950–2050). Run `pc_side_py/test_rx_framing.py`. |
+| Cursor keeps flying after the stick is released | A backlog of frames was replayed as movement. The reader must only apply the newest frame (§5.1). |
+| Everything feels sluggish / laggy | The sensor loop is running at ~65 Hz instead of ~650 Hz: `timeBeginPeriod(1)` is missing (§6), or the device frame rate dropped. |
 | `Serial interface initialization error` at startup | Wrong COM port. Check Device Manager; update `SERIAL_PORT` in `app.py` (and the two legacy scripts). |
 | Engine starts but the pointer never moves | Run from `pc_side_py/`; check `config.json` was found (a missing file silently loads weaker fallback defaults). |
 | Pointer drifts when the stick is at rest | Centre is off — press **Capture Rest Center Baseline** while the stick rests, or raise `mouse.deadzone`. |
