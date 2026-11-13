@@ -2,7 +2,7 @@ import serial
 from controller import JoystickController
 
 # !!! Update with your current connection string !!!
-SERIAL_PORT = 'COM5'
+SERIAL_PORT = 'COM10'
 BAUD_RATE = 115200
 
 def main():
