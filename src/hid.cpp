@@ -5,6 +5,21 @@
 #include <BLEHIDDevice.h>
 #include <BLEServer.h>
 #include <BLE2902.h>
+#include <BLESecurity.h>
+#include <BLEUtils.h>
+
+// Windows only consumes the HID input report after an encrypted bond, and the
+// report characteristic itself is flagged encrypted. Accept "Just Works" bonding.
+class SecurityCallbacks : public BLESecurityCallbacks {
+public:
+  bool onSecurityRequest() override { return true; }
+  bool onConfirmPIN(uint32_t pin) override { return true; }
+  uint32_t onPassKeyRequest() override { return 0; }
+  void onPassKeyNotify(uint32_t pass_key) override { (void)pass_key; }
+  void onAuthenticationComplete(esp_ble_auth_cmpl_t cmpl) override { (void)cmpl; }
+};
+
+static SecurityCallbacks securityCallbacks;
 
 static const uint8_t reportMap[] = {
     0x05, 0x01,   // USAGE_PAGE (Generic Desktop)
@@ -57,6 +72,13 @@ bool hid_is_connected() {
 
 void hid_init(const char* deviceName) {
   BLEDevice::init(deviceName);
+  BLEDevice::setEncryptionLevel(ESP_BLE_SEC_ENCRYPT);
+  BLEDevice::setSecurityCallbacks(&securityCallbacks);
+
+  BLESecurity *security = new BLESecurity();
+  security->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_BOND);
+  security->setKeySize(16);
+
   BLEServer* server = BLEDevice::createServer();
   server->setCallbacks(&serverCallbacks);
 
@@ -64,15 +86,36 @@ void hid_init(const char* deviceName) {
   hid->reportMap((uint8_t*)reportMap, sizeof(reportMap));
   hid->pnp(0x02, 0x046D, 0xC03E, 0x0100);
   hid->hidInfo(0x00, 0x02);               // country 0, flags: Normally Connectable
-  hid->manufacturer("Espressif");
-  mouseInput = hid->inputReport(REPORT_ID_MOUSE);
+
+  // The bundled library's inputReport() creates the HID input report with
+  // ESP_GATT_PERM_READ_ENCRYPTED | ESP_GATT_PERM_WRITE_ENCRYPTED. This board's
+  // precompiled SDK does not persist bond keys in NVS, so on every reboot the
+  // encrypted characteristic becomes unreadable and Windows pairs the mouse but
+  // refuses to subscribe to the report -> no cursor. Create the same
+  // characteristic ourselves with plain READ|NOTIFY (same UUID, same descriptors).
+  BLEService* hidService = hid->hidService();
+  mouseInput = hidService->createCharacteristic(
+      (uint16_t)0x2a4d,
+      BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+  // Same treatment the battery level gets: enable the CCCD by default, or
+  // Windows "connects" but never receives HID reports after a device reboot.
+  BLE2902* inputReportCcc = new BLE2902();
+  inputReportCcc->setNotifications(true);
+  mouseInput->addDescriptor(inputReportCcc);
+  BLEDescriptor* reportRef = new BLEDescriptor(BLEUUID((uint16_t)0x2908));
+  uint8_t reportRefVal[] = { REPORT_ID_MOUSE, 0x01 };
+  reportRef->setValue(reportRefVal, sizeof(reportRefVal));
+  mouseInput->addDescriptor(reportRef);                      // report reference descriptor
+
   hid->startServices();
   hid->setBatteryLevel(100);
 
   BLEAdvertising* advertising = server->getAdvertising();
   advertising->addServiceUUID(hid->hidService()->getUUID());
+  advertising->setAppearance(0x03C2);      // General HID Device / Mouse
   advertising->setScanResponse(true);
   advertising->setMinPreferred(0x06);
+  advertising->setMinPreferred(0x12);
   advertising->start();
 }
 
