@@ -1,47 +1,54 @@
-#include <Arduino.h>
+#include "config.h"
+#include "buzzer.h"
+#include "hid.h"
+#include "input.h"
+#include "serial_commands.h"
 
-const int X_PIN = 34;
-const int Y_PIN = 35;
-const int SW_PIN = 32;
-const int BUZZER_PIN = 25; // Connect active buzzer pin here
+/* Wiring for the two input paths:
+ *
+ *   USB cable -> telemetry (rawX,rawY,button\n) and BEEP commands
+ *   Bluetooth -> BLE HID mouse reports
+ *
+ * main.cpp only ties those together; the input decision logic lives in
+ * input.cpp and the HID service lives in hid.cpp.
+ */
+
+static InputState inputState;
 
 void setup() {
   Serial.begin(115200);
   pinMode(SW_PIN, INPUT_PULLUP);
-  pinMode(BUZZER_PIN, OUTPUT);
-  digitalWrite(BUZZER_PIN, LOW); // Start with buzzer silent
-  
-  analogSetAttenuation(ADC_11db); 
+  buzzer_init();
+  pinMode(BATTERY_PIN, INPUT);
+  analogSetAttenuation(ADC_11db);
+
+  inputStateInit(inputState);
+  hid_init("JoystickMouse");
 }
 
 void loop() {
-  // --- READ SENSORS ---
   int rawX = analogRead(X_PIN);
   int rawY = analogRead(Y_PIN);
-  int swValue = digitalRead(SW_PIN); // 0 = Pressed, 1 = Released
+  int swRaw = digitalRead(SW_PIN); // 0 = pressed, 1 = released
 
-  // Send data to PC
+  // USB telemetry, unchanged: rawX,rawY,button\n
   Serial.print(rawX);
   Serial.print(",");
   Serial.print(rawY);
   Serial.print(",");
-  Serial.println(swValue);
+  Serial.println(swRaw);
 
-  // --- LISTEN FOR PC COMMANDS (BUZZER AUDIO) ---
-  if (Serial.available() > 0) {
-    String command = Serial.readStringUntil('\n');
-    command.trim();
+  // Bluetooth HID report
+  float now = millis() / 1000.0f;
+  int swPressed = (swRaw == LOW) ? 1 : 0;
+  MoveResult mv = inputStep(inputState, rawX, rawY, swPressed, now);
+  hid_send_mouse_report(mv.buttons, mv.dx, mv.dy, mv.wheel);
 
-    if (command.startsWith("BEEP:")) {
-      int count = command.substring(5).toInt();
-      for (int i = 0; i < count; i++) {
-        digitalWrite(BUZZER_PIN, HIGH);
-        delay(80); // Short, crisp beep
-        digitalWrite(BUZZER_PIN, LOW);
-        if (i < count - 1) delay(80); // Gap between multi-beeps
-      }
-    }
+  // Profile switch beeps
+  if (mv.mode_shift_beeps) {
+    buzzer_beep(mv.mode_shift_beeps);
   }
 
-  delay(8); 
+  pump_serial_commands();
+  delay(8);
 }
